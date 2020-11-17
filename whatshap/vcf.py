@@ -6,7 +6,7 @@ import logging
 import itertools
 import math
 from abc import ABC, abstractmethod
-from collections import namedtuple
+from collections import namedtuple, defaultdict
 from pysam import VariantFile
 from typing import List
 
@@ -45,7 +45,7 @@ class VcfInvalidChromosome(VcfError):
 class VcfVariant(ABC):
     """A variant in a VCF file (not to be confused with core.Variant)"""
 
-    __slots__ = ("position", "reference_allele", "alternative_alleles")
+    __slots__ = ("position", "reference_allele", "alternative_allele")
 
     @abstractmethod
     def __repr__(self):
@@ -117,8 +117,8 @@ class VcfBiallelicVariant(VcfVariant):
         Common prefixes and/or suffixes between the reference and alternative allele are removed,
         and the position is adjusted as necessary.
 
-        >>> VcfVariant(100, 'GCTGTT', 'GCTAAATT').normalized()
-        VcfVariant(103, 'G', 'AAA')
+        >>> VcfBiallelicVariant(100, 'GCTGTT', 'GCTAAATT').normalized()
+        VcfBiallelicVariant(103, 'G', 'AAA')
         """
         pos, ref, alt = self.position, self.reference_allele, self.alternative_allele
         while len(ref) >= 1 and len(alt) >= 1 and ref[-1] == alt[-1]:
@@ -134,7 +134,7 @@ class VcfBiallelicVariant(VcfVariant):
 class VcfMultiallelicVariant(VcfVariant):
     """A variant in a VCF file (not to be confused with core.Variant)"""
 
-    __slots__ = ("alternative_alleles")
+    __slots__ = "alternative_alleles"
 
     def __init__(self, position: int, reference_allele: str, alternative_alleles: List[str]):
         """
@@ -158,7 +158,12 @@ class VcfMultiallelicVariant(VcfVariant):
             (self.position == other.position)
             and (self.reference_allele == other.reference_allele)
             and (len(self.alternative_alleles) == len(other.alternative_alleles))
-            and all([self.alternative_alleles[i] == other.alternative_alleles[i] for i in range(len(self.alternative_alleles))])
+            and all(
+                [
+                    self.alternative_alleles[i] == other.alternative_alleles[i]
+                    for i in range(len(self.alternative_alleles))
+                ]
+            )
         )
 
     def __lt__(self, other):
@@ -166,16 +171,18 @@ class VcfMultiallelicVariant(VcfVariant):
             return None
         if (self.position, self.reference_allele) != (other.position, other.reference_allele):
             return (self.position, self.reference_allele) < (other.position, other.reference_allele)
-        for alt_self, alt_other in zip(sorted(self.alternative_alleles), sorted(other.alternative_alleles)):
+        for alt_self, alt_other in zip(
+            sorted(self.alternative_alleles), sorted(other.alternative_alleles)
+        ):
             if alt_self != alt_other:
                 return alt_self < alt_other
-                
+
         return False
 
     def is_snv(self):
         return any([self.reference_allele != alt for alt in self.alternative_alleles]) and (
-            len(self.reference_allele) == 1 and
-            all([len(alt) == 1 for alt in self.alternative_alleles])
+            len(self.reference_allele) == 1
+            and all([len(alt) == 1 for alt in self.alternative_alleles])
         )
 
     def normalized(self):
@@ -185,14 +192,20 @@ class VcfMultiallelicVariant(VcfVariant):
         Common prefixes and/or suffixes between the reference and alternative allele are removed,
         and the position is adjusted as necessary.
 
-        >>> VcfVariant(100, 'GCTGTT', 'GCTAAATT').normalized()
-        VcfVariant(103, 'G', 'AAA')
         """
         pos, ref, alts = self.position, self.reference_allele, self.alternative_alleles
-        while len(ref) >= 1 and all([len(alt) >= 1 for alt in alts]) and all([ref[-1] == alt[-1] for alt in alts]):
+        while (
+            len(ref) >= 1
+            and all([len(alt) >= 1 for alt in alts])
+            and all([ref[-1] == alt[-1] for alt in alts])
+        ):
             ref, alts = ref[:-1], [alt[:-1] for alt in alts]
 
-        while len(ref) >= 1 and all([len(alt) >= 1 for alt in alts]) and all([ref[0] == alt[0] for alt in alts]):
+        while (
+            len(ref) >= 1
+            and all([len(alt) >= 1 for alt in alts])
+            and all([ref[0] == alt[0] for alt in alts])
+        ):
             ref, alts = ref[1:], [alt[1:] for alt in alts]
             pos += 1
 
@@ -255,6 +268,7 @@ class VariantTable:
         self.samples = samples
         self.genotypes = [[] for _ in samples]
         self.phases = [[] for _ in samples]
+        self.allele_depths = [[] for _ in samples]
         self.genotype_likelihoods = [[] for _ in samples]
         self.variants = []
         self._sample_to_index = {sample: index for index, sample in enumerate(samples)}
@@ -272,7 +286,9 @@ class VariantTable:
     # self.genotypes.append(genotypes)
     # fmt: on
 
-    def add_variant(self, variant: VcfVariant, genotypes, phases, genotype_likelihoods):
+    def add_variant(
+        self, variant: VcfVariant, genotypes, phases, genotype_likelihoods, allele_depths
+    ):
         """
         Add a row to the table
 
@@ -280,11 +296,14 @@ class VariantTable:
         genotypes -- iterable of Genotype objects
         phases -- iterable of VariantCallPhase objects
         genotype_likelihoods -- iterable of GenotypeLikelihoods objects
+        allele_depths -- number of observations for each allele
         """
         if len(genotypes) != len(self.genotypes):
             raise ValueError("Expecting as many genotypes as there are samples")
         if len(phases) != len(self.phases):
             raise ValueError("Expecting as many phases as there are samples")
+        if len(allele_depths) != len(self.allele_depths):
+            raise ValueError("Expecting as many allele_depths as there are samples")
         self.variants.append(variant)
         for i, genotype in enumerate(genotypes):
             assert isinstance(genotype, Genotype)
@@ -293,6 +312,8 @@ class VariantTable:
             self.phases[i].append(phase)
         for i, gl in enumerate(genotype_likelihoods):
             self.genotype_likelihoods[i].append(gl)
+        for i, depths in enumerate(allele_depths):
+            self.allele_depths[i].append(depths)
 
     def genotypes_of(self, sample: str):
         """Retrieve genotypes by sample name"""
@@ -321,6 +342,10 @@ class VariantTable:
         return len(
             set([i.block_id for i in self.phases[self._sample_to_index[sample]] if i is not None])
         )
+
+    def allele_depths_of(self, sample: str):
+        """Retrieve genotypes by sample name"""
+        return self.allele_depths[self._sample_to_index[sample]]
 
     def id_of(self, sample: str):
         """Return a unique int id of a sample given by name"""
@@ -440,6 +465,7 @@ class VcfReader:
         ignore_genotypes=False,
         ploidy=None,
         mav=False,
+        allele_depth=False,
     ):
         """
         path -- Path to VCF file
@@ -459,6 +485,7 @@ class VcfReader:
         self.samples = list(self._vcf_reader.header.samples)  # intentionally public
         self.ploidy = ploidy
         self.mav = mav
+        self.allele_depth = allele_depth
         logger.debug("Found %d sample(s) in the VCF file.", len(self.samples))
 
     def __enter__(self):
@@ -541,6 +568,15 @@ class VcfReader:
         phase = call["GT"]
         return VariantCallPhase(block_id=block_id, phase=phase, quality=call.get("PQ", None))
 
+    @staticmethod
+    def _extract_AD_depth(call):
+        depths = call["AD"]
+        dic = defaultdict(int)
+        if depths is not None and len(depths) > 0 and None not in depths:
+            for allele, depth in enumerate(depths):
+                dic[allele] = int(depth)
+        return dic
+
     def _process_single_chromosome(self, chromosome, records):
         phase_detected = None
         n_snvs = 0
@@ -552,7 +588,7 @@ class VcfReader:
             if len(record.alts) > 1:
                 # Multi-ALT sites are not supported, yet
                 n_multi += 1
-                if not self.mav:
+                if not self.mav or len(record.alts) >= get_max_genotype_alleles():
                     continue
 
             pos, ref, alts = record.start, str(record.ref), [str(alt) for alt in record.alts]
@@ -657,12 +693,25 @@ class VcfReader:
             else:
                 genotypes = [Genotype([]) for i in range(len(self.samples))]
                 phases = [None] * len(self.samples)
-            if len(alts) == 1:
-                #print("alts={}".format(alts))
-                variant = VcfBiallelicVariant(position=pos, reference_allele=ref, alternative_allele=alts[0])
+
+            if self.allele_depth:
+                depths = []
+                for sample_name, call in record.samples.items():
+                    depth = self._extract_AD_depth(call)
+                    depths.append(depth)
             else:
-                variant = VcfMultiallelicVariant(position=pos, reference_allele=ref, alternative_alleles=alts)
-            table.add_variant(variant, genotypes, phases, genotype_likelihoods)
+                depths = [None] * len(record.samples)
+
+            if len(alts) == 1:
+                # print("alts={}".format(alts))
+                variant = VcfBiallelicVariant(
+                    position=pos, reference_allele=ref, alternative_allele=alts[0]
+                )
+            else:
+                variant = VcfMultiallelicVariant(
+                    position=pos, reference_allele=ref, alternative_alleles=alts
+                )
+            table.add_variant(variant, genotypes, phases, genotype_likelihoods, depths)
 
         logger.debug(
             "Parsed %s SNVs and %s non-SNVs. Also found %s multi-ALTs.", n_snvs, n_other, n_multi,
@@ -727,6 +776,7 @@ PREDEFINED_FORMATS = {
     "PQ": VcfHeader("FORMAT", "PQ", 1, "Float", "Phasing quality"),
     "PS": VcfHeader("FORMAT", "PS", 1, "Integer", "Phase set identifier"),
     "HS": VcfHeader("FORMAT", "HS", ".", "Integer", "Haploid phase set identifier"),
+    "AD": VcfHeader("FORMAT", "AD", ".", "Integer", "Observed allele depths"),
 }
 
 PREDEFINED_INFOS = {
