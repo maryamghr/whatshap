@@ -160,7 +160,13 @@ def run_polyphase(
 
         vcf_reader = stack.enter_context(
             VcfReader(
-                variant_file, indels=indels, phases=True, genotype_likelihoods=False, ploidy=ploidy,
+                variant_file,
+                indels=indels,
+                phases=True,
+                genotype_likelihoods=False,
+                ploidy=ploidy,
+                mav=False,
+                allele_depth=False,
             )
         )
 
@@ -432,6 +438,9 @@ def phase_single_individual(readset, phasable_variant_table, sample, phasing_par
         block_starts = compute_linkage_based_block_starts(
             readset, index, phasing_param.ploidy, single_linkage=False
         )
+        
+    # print variant table
+    
 
     # Set block borders and split readset
     ext_block_starts = block_starts + [num_vars]
@@ -493,6 +502,30 @@ def phase_single_individual(readset, phasable_variant_table, sample, phasing_par
             blockwise_haplotypes.append(haplotypes)
             blockwise_cut_positions.append(cut_positions)
             blockwise_haploid_cuts.append(haploid_cuts)
+            
+            if block_num_vars > 1:
+                # print haplotypes:
+                print("========= BLOCK {} ========".format(processed_non_singleton_blocks))
+                '''
+                print("Reads")
+                for r in block_readset:
+                    s = ""
+                    marker = index[block_readset.get_positions()[0]]
+                    for var in r:
+                        for p in range(marker, index[var.position]):
+                            s += " "
+                        s += str(var.allele)
+                        marker = index[var.position]+1
+                    print(s)
+                print("Haplotypes")
+                for h in haplotypes:
+                    print("".join(h))
+                print("Variants")
+                '''
+                for i, pos in enumerate(block_readset.get_positions()):
+                    if any([h[i] != haplotypes[0][i] for h in haplotypes]):
+                        print("{}: {}".format(pos+1, " ".join([h[i] for h in haplotypes])))
+                #print("")
 
     else:
         # sort block readsets in descending order by number of reads
