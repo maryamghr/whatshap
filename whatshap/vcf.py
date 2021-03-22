@@ -241,7 +241,7 @@ class GenotypeLikelihoods:
             # shift log likelihoods such that the largest one is zero
             m = max(self.log_prob_genotypes)
             return PhredGenotypeLikelihoods(
-                [round((prob - m) * -10) for prob in self.log_prob_genotypes], ploidy=ploidy,
+                [round((prob - m) * -10) for prob in self.log_prob_genotypes], ploidy=ploidy
             )
         else:
             p = [10 ** x for x in self.log_prob_genotypes]
@@ -344,8 +344,18 @@ class VariantTable:
         )
 
     def allele_depths_of(self, sample: str):
-        """Retrieve genotypes by sample name"""
-        return self.allele_depths[self._sample_to_index[sample]]
+        """Retrieve allele depths by sample name"""
+        depths = []
+        for depth_code in self.allele_depths[self._sample_to_index[sample]]:
+            c = depth_code
+            depth = []
+            while c > 0:
+                depth.append(c & 1023)
+                c = c >> 10
+            depths.append(tuple(depth))
+        return depths
+
+        # return self.allele_depths[self._sample_to_index[sample]]
 
     def id_of(self, sample: str):
         """Return a unique int id of a sample given by name"""
@@ -383,7 +393,7 @@ class VariantTable:
 
     # TODO: extend this to polyploid case
     def phased_blocks_as_reads(
-        self, sample, input_variants, source_id, numeric_sample_id, default_quality=20, mapq=100,
+        self, sample, input_variants, source_id, numeric_sample_id, default_quality=20, mapq=100
     ):
         """
         Yields one sorted core.Read object per phased block, encoding the phase information as
@@ -427,10 +437,7 @@ class VariantTable:
                 read_map[phase.block_id].add_variant(variant.position, phase.phase[0], quality)
             else:
                 r = Read(
-                    "{}_block_{}".format(sample, phase.block_id),
-                    mapq,
-                    source_id,
-                    numeric_sample_id,
+                    "{}_block_{}".format(sample, phase.block_id), mapq, source_id, numeric_sample_id
                 )
                 r.add_variant(variant.position, phase.phase[0], quality)
                 read_map[phase.block_id] = r
@@ -571,11 +578,14 @@ class VcfReader:
     @staticmethod
     def _extract_AD_depth(call):
         depths = call["AD"]
-        dic = defaultdict(int)
+        depth_code = 0
         if depths is not None and len(depths) > 0 and None not in depths:
-            for allele, depth in enumerate(depths):
-                dic[allele] = int(depth)
-        return dic
+            for i in range(len(depths) - 1, -1, -1):
+                cnt = min(1023, depths[i])
+                depth_code = depth_code << 10
+                depth_code += cnt
+
+        return depth_code
 
     def _process_single_chromosome(self, chromosome, records):
         phase_detected = None
@@ -608,7 +618,7 @@ class VcfReader:
 
             if prev_position == pos:
                 logger.warning(
-                    "Skipping duplicated position %s on chromosome %r", pos + 1, chromosome,
+                    "Skipping duplicated position %s on chromosome %r", pos + 1, chromosome
                 )
                 continue
             prev_position = pos
@@ -714,7 +724,7 @@ class VcfReader:
             table.add_variant(variant, genotypes, phases, genotype_likelihoods, depths)
 
         logger.debug(
-            "Parsed %s SNVs and %s non-SNVs. Also found %s multi-ALTs.", n_snvs, n_other, n_multi,
+            "Parsed %s SNVs and %s non-SNVs. Also found %s multi-ALTs.", n_snvs, n_other, n_multi
         )
 
         # TODO remove overlapping variants
@@ -790,7 +800,7 @@ PREDEFINED_INFOS = {
     "AN": VcfHeader("INFO", "AN", "A", "Integer", "Total number of alleles in called genotypes"),
     "END": VcfHeader("INFO", "END", 1, "Integer", "Stop position of the interval"),
     "SVLEN": VcfHeader(
-        "INFO", "SVLEN", ".", "Integer", "Difference in length between REF and ALT alleles",
+        "INFO", "SVLEN", ".", "Integer", "Difference in length between REF and ALT alleles"
     ),
     "SVTYPE": VcfHeader("INFO", "SVTYPE", 1, "String", "Type of structural variant"),
 }
